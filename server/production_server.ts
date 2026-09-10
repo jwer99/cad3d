@@ -126,8 +126,28 @@ if (fs.existsSync(DIST_DIR)) {
     }
   });
 
-  // SPA Catch-All fallback: deliver index.html
+  // Google Search Console Verification Handler (Strict matching for real verification file)
+  app.get("/google:code.html", (req, res) => {
+    const filename = `google${req.params.code}.html`;
+    const inDist = path.join(DIST_DIR, filename);
+    const inPublic = path.join(process.cwd(), "public", filename);
+    if (fs.existsSync(inDist)) {
+      return res.sendFile(inDist);
+    }
+    if (fs.existsSync(inPublic)) {
+      return res.sendFile(inPublic);
+    }
+    // Return true 404 for any fake Google verification probe
+    res.status(404).type("text/plain").send("Google verification file not found");
+  });
+
+  // SPA Catch-All fallback: deliver index.html ONLY for application routes, NOT for missing static files
   app.get("*", (req, res) => {
+    // If request asks for a missing file with an extension, return true 404 to avoid soft 404s
+    if (/\.[a-zA-Z0-9]+$/.test(req.path) && req.path !== "/index.html" && req.path !== "/splitter.html") {
+      res.status(404).type("text/plain").send("Resource not found");
+      return;
+    }
     res.sendFile(path.join(DIST_DIR, "index.html"));
   });
 } else {

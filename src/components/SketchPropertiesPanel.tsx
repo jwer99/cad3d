@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Point2D, Profile } from '../types';
-import { Settings2, Slash, Trash2, Copy, Move, Maximize2, CircleDashed, FlipHorizontal, Sparkles, X } from 'lucide-react';
+import MeasurementInput, { formatMeasurement } from './MeasurementInput';
+import { Settings2, Slash, Trash2, Copy, Move, Maximize2, CircleDashed, FlipHorizontal, Sparkles, X, Square, Triangle, Hexagon, PenTool, Ruler } from 'lucide-react';
 
 export default function SketchPropertiesPanel({ 
   activeSketch, 
@@ -10,8 +11,18 @@ export default function SketchPropertiesPanel({
   onStartCustomMirror,
   setSelectedProfileIds,
   onExtrudeProfile,
-  className
+  className,
+  showProfileList = false,
+  expandRevision = 0
 }: any) {
+  const [collapsed, setCollapsed] = useState(false);
+  const selectionKey = (selectedProfileIdsList || []).join(',');
+  useEffect(() => setCollapsed(false), [activeSketch?.id, selectionKey, expandRevision]);
+  useEffect(() => {
+    if (showProfileList && activeSketch?.profiles?.length && (!selectedProfileIdsList || selectedProfileIdsList.length === 0)) {
+      setSelectedProfileIds?.([activeSketch.profiles[activeSketch.profiles.length - 1].id]);
+    }
+  }, [activeSketch?.id, activeSketch?.profiles?.length, showProfileList]);
   const [mirrorCopy, setMirrorCopy] = useState(false);
   const [moveCopy, setMoveCopy] = useState(false);
   const [applyToPattern, setApplyToPattern] = useState(true);
@@ -28,7 +39,7 @@ export default function SketchPropertiesPanel({
   const [circularAngle, setCircularAngle] = useState<number>(360);
   
   const profiles = activeSketch?.profiles?.filter((p: any) => selectedProfileIdsList?.includes(p.id));
-  if (!profiles || profiles.length === 0) return null;
+  if (!activeSketch || (!showProfileList && !profiles?.length)) return null;
   const profile = profiles[0];
 
   const updateProfile = (updated: any, updateGroup: boolean = false) => {
@@ -81,6 +92,134 @@ export default function SketchPropertiesPanel({
     });
     
     onUpdateActiveSketch({ ...activeSketch, profiles: updatedProfiles });
+  };
+
+  const handleUpdateRectangleDims = (newW?: number, newH?: number) => {
+    if (!profile || !profile.points || profile.points.length < 4) return;
+    const xs = profile.points.map((p: Point2D) => p.x);
+    const ys = profile.points.map((p: Point2D) => p.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const currentW = Math.max(0.01, maxX - minX);
+    const currentH = Math.max(0.01, maxY - minY);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    const targetW = (newW !== undefined && !isNaN(newW) && newW > 0) ? newW : currentW;
+    const targetH = (newH !== undefined && !isNaN(newH) && newH > 0) ? newH : currentH;
+
+    const halfW = targetW / 2;
+    const halfH = targetH / 2;
+
+    let updatedProfiles = activeSketch.profiles.map((p: any) => {
+      const isSelected = selectedProfileIdsList.includes(p.id);
+      const belongsToPatternGroup = applyToPattern && p.patternGroupId && profiles.some((sel: any) => sel.type === "rectangle" && sel.patternGroupId === p.patternGroupId);
+      if ((isSelected || belongsToPatternGroup) && p.type === "rectangle" && p.points && p.points.length >= 4) {
+        const pXs = p.points.map((pt: Point2D) => pt.x);
+        const pYs = p.points.map((pt: Point2D) => pt.y);
+        const pCenterX = (Math.min(...pXs) + Math.max(...pXs)) / 2;
+        const pCenterY = (Math.min(...pYs) + Math.max(...pYs)) / 2;
+        const pts: Point2D[] = [
+          { x: parseFloat((pCenterX - halfW).toFixed(2)), y: parseFloat((pCenterY - halfH).toFixed(2)) },
+          { x: parseFloat((pCenterX + halfW).toFixed(2)), y: parseFloat((pCenterY - halfH).toFixed(2)) },
+          { x: parseFloat((pCenterX + halfW).toFixed(2)), y: parseFloat((pCenterY + halfH).toFixed(2)) },
+          { x: parseFloat((pCenterX - halfW).toFixed(2)), y: parseFloat((pCenterY + halfH).toFixed(2)) },
+        ];
+        return { ...p, points: pts };
+      }
+      return p;
+    });
+
+    onUpdateActiveSketch({ ...activeSketch, profiles: updatedProfiles });
+  };
+
+  const handleUpdateTriangleDims = (newBase?: number, newHeight?: number) => {
+    if (!profile || !profile.points || profile.points.length < 3) return;
+    const xs = profile.points.map((p: Point2D) => p.x);
+    const ys = profile.points.map((p: Point2D) => p.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const currentW = Math.max(0.01, maxX - minX);
+    const currentH = Math.max(0.01, maxY - minY);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    const scaleX = (newBase !== undefined && !isNaN(newBase) && newBase > 0) ? (newBase / currentW) : 1;
+    const scaleY = (newHeight !== undefined && !isNaN(newHeight) && newHeight > 0) ? (newHeight / currentH) : 1;
+
+    const newPoints: Point2D[] = profile.points.map((pt: Point2D) => ({
+      x: parseFloat((centerX + (pt.x - centerX) * scaleX).toFixed(2)),
+      y: parseFloat((centerY + (pt.y - centerY) * scaleY).toFixed(2)),
+    }));
+
+    updateProfile({ ...profile, points: newPoints });
+  };
+
+  const handleUpdatePolygonRadius = (newRadius: number) => {
+    if (!profile || isNaN(newRadius) || newRadius <= 0 || !profile.points) return;
+    const xs = profile.points.map((p: Point2D) => p.x);
+    const ys = profile.points.map((p: Point2D) => p.y);
+    const centerX = profile.center?.x ?? ((Math.min(...xs) + Math.max(...xs)) / 2);
+    const centerY = profile.center?.y ?? ((Math.min(...ys) + Math.max(...ys)) / 2);
+    const currentRadius = profile.radius || Math.hypot(profile.points[0].x - centerX, profile.points[0].y - centerY) || 1;
+    const scale = newRadius / currentRadius;
+
+    const newPoints: Point2D[] = profile.points.map((pt: Point2D) => ({
+      x: parseFloat((centerX + (pt.x - centerX) * scale).toFixed(2)),
+      y: parseFloat((centerY + (pt.y - centerY) * scale).toFixed(2)),
+    }));
+
+    updateProfile({ ...profile, points: newPoints, radius: newRadius, center: { x: centerX, y: centerY } });
+  };
+
+  const handleUpdateLineDims = (newLen?: number, newAngleDeg?: number) => {
+    if (!profile || !profile.points || profile.points.length < 2) return;
+    const p0 = profile.points[0];
+    const pEnd = profile.points[profile.points.length - 1];
+    const dx = pEnd.x - p0.x;
+    const dy = pEnd.y - p0.y;
+    const currentLen = Math.max(0.01, Math.hypot(dx, dy));
+    const currentAngle = Math.atan2(dy, dx);
+
+    const targetLen = (newLen !== undefined && !isNaN(newLen) && newLen > 0) ? newLen : currentLen;
+    const targetAngle = (newAngleDeg !== undefined && !isNaN(newAngleDeg)) ? (newAngleDeg * Math.PI / 180) : currentAngle;
+
+    const newPEnd: Point2D = {
+      x: parseFloat((p0.x + Math.cos(targetAngle) * targetLen).toFixed(2)),
+      y: parseFloat((p0.y + Math.sin(targetAngle) * targetLen).toFixed(2)),
+    };
+
+    const newPoints = [...profile.points];
+    newPoints[newPoints.length - 1] = newPEnd;
+    updateProfile({ ...profile, points: newPoints });
+  };
+
+  const handleUpdateGeneralDims = (newW?: number, newH?: number) => {
+    if (!profile || !profile.points || profile.points.length < 2) return;
+    const xs = profile.points.map((p: Point2D) => p.x);
+    const ys = profile.points.map((p: Point2D) => p.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const currentW = Math.max(0.01, maxX - minX);
+    const currentH = Math.max(0.01, maxY - minY);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    const scaleX = (newW !== undefined && !isNaN(newW) && newW > 0) ? (newW / currentW) : 1;
+    const scaleY = (newH !== undefined && !isNaN(newH) && newH > 0) ? (newH / currentH) : 1;
+
+    const newPoints: Point2D[] = profile.points.map((pt: Point2D) => ({
+      x: parseFloat((centerX + (pt.x - centerX) * scaleX).toFixed(2)),
+      y: parseFloat((centerY + (pt.y - centerY) * scaleY).toFixed(2)),
+    }));
+
+    updateProfile({ ...profile, points: newPoints });
   };
 
   const addProfiles = (newProfiles: any[]) => {
@@ -245,18 +384,33 @@ export default function SketchPropertiesPanel({
     <div className={className || "absolute top-4 right-4 w-72 bg-[#121214]/95 backdrop-blur-md border border-blue-500/40 rounded-xl shadow-[0_10px_35px_rgba(0,0,0,0.6)] flex flex-col pointer-events-auto z-20 max-h-[85%] overflow-y-auto custom-scrollbar animate-fadeIn"}>
       <div className="flex justify-between items-center p-3 border-b border-border-subtle/60 bg-black/40 sticky top-0 z-10">
         <span className="text-xs font-bold text-blue-400 flex items-center gap-1.5 uppercase tracking-wider">
-          <Settings2 size={15} className="text-blue-400" /> {profiles.length > 1 ? `Propiedades (${profiles.length})` : "Propiedades de Figura"}
+          <Settings2 size={15} className="text-blue-400" /> {profiles.length > 1 ? `Propiedades (${profiles.length})` : "Propiedades del boceto"}
         </span>
         <button 
-          onClick={onClose} 
+          onClick={() => setCollapsed(value => !value)}
           className="text-text-muted hover:text-white p-1 hover:bg-white/10 rounded transition-colors cursor-pointer"
-          title="Cerrar panel de propiedades"
+          title={collapsed ? "Expandir propiedades" : "Minimizar propiedades"}
+          aria-label={collapsed ? "Expandir propiedades" : "Minimizar propiedades"}
+          aria-expanded={!collapsed}
         >
-          <X size={14} />
+          <span aria-hidden="true">{collapsed ? '＋' : '−'}</span>
         </button>
       </div>
       
-      <div className="p-3 flex flex-col gap-1">
+      {!collapsed && <div className="p-3 flex flex-col gap-1">
+        {showProfileList && <label className="flex flex-col gap-2 text-xs text-zinc-300 mb-2">
+          Figura a editar
+          <select aria-label="Figura a editar" value={profiles.length === 1 ? profile.id : ''}
+            onChange={event => setSelectedProfileIds(event.target.value ? [event.target.value] : [])}
+            className="w-full bg-zinc-900 border border-white/20 rounded p-2 text-white">
+            <option value="">{profiles.length > 1 ? 'Varias figuras seleccionadas' : 'Selecciona una figura'}</option>
+            {activeSketch.profiles.map((item: Profile, index: number) => <option key={item.id} value={item.id}>
+              {index + 1}. {({ circle: 'Círculo', rectangle: 'Rectángulo', polygon: 'Polígono', hexagon: 'Hexágono', triangle: 'Triángulo', slot: 'Ranura', arc: 'Arco', line: 'Línea' } as Record<string, string>)[item.type] || 'Figura'}
+            </option>)}
+          </select>
+          {!profiles.length && <p className="text-zinc-400 leading-relaxed">{activeSketch.profiles.length ? 'Selecciona una figura aquí o en el boceto para modificar sus medidas y posición.' : 'Dibuja una figura para editar sus propiedades aquí.'}</p>}
+        </label>}
+        {profiles.length > 0 && <>
         {/* Extruir Directamente */}
         {onExtrudeProfile && (
           <button
@@ -286,24 +440,269 @@ export default function SketchPropertiesPanel({
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-400">Radio (R):</span>
                   <div className="flex items-center gap-1">
-                    <input
-                      type="number"
+                    <MeasurementInput
+                      aria-label="Radio"
                       value={rad}
-                      onChange={(e) => handleUpdateCircleRadii(parseFloat(e.target.value))}
+                      onValueChange={handleUpdateCircleRadii}
                       className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
                       step="0.5"
+                      min="0.001"
                     />
                     <span className="text-text-muted font-mono text-[10px]">mm</span>
                   </div>
                 </div>
                 <div className="flex items-center justify-between text-text-muted text-[10px] font-mono border-t border-white/5 pt-1">
                   <span>Diámetro (Ø):</span>
-                  <span className="text-emerald-400 font-bold font-mono">{(rad * 2).toFixed(2)} mm</span>
+                  <span className="text-emerald-400 font-bold font-mono">{formatMeasurement(rad * 2)} mm</span>
                 </div>
                 <label className="flex items-center gap-2 cursor-pointer text-zinc-400 hover:text-white select-none pt-0.5">
                   <input type="checkbox" checked={applyToPattern} onChange={(e) => setApplyToPattern(e.target.checked)} className="accent-blue-500 rounded" />
                   <span className="text-[10px]">Propagar a toda la matriz</span>
                 </label>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Dimensiones de Rectángulo */}
+        {profiles.some((p: any) => p.type === "rectangle") && (() => {
+          const rectProf = profiles.find((p: any) => p.type === "rectangle");
+          if (!rectProf || !rectProf.points || rectProf.points.length < 4) return null;
+          const xs = rectProf.points.map((pt: Point2D) => pt.x);
+          const ys = rectProf.points.map((pt: Point2D) => pt.y);
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+          const w = Math.max(0.01, maxX - minX);
+          const h = Math.max(0.01, maxY - minY);
+          const area = w * h;
+          return (
+            <div className="mb-2 bg-black/30 p-2.5 rounded-lg border border-blue-500/20">
+              <SectionHeader title={profiles.filter((p: any) => p.type === "rectangle").length > 1 ? "Dimensiones (Rectángulos)" : "Dimensiones del Rectángulo"} icon={Square} />
+              <div className="flex flex-col gap-2 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Ancho (W):</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Ancho Rectángulo"
+                      value={w}
+                      onValueChange={(val: number) => handleUpdateRectangleDims(val, undefined)}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                      min="0.1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">mm</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Alto (H):</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Alto Rectángulo"
+                      value={h}
+                      onValueChange={(val: number) => handleUpdateRectangleDims(undefined, val)}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                      min="0.1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">mm</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-text-muted text-[10px] font-mono border-t border-white/5 pt-1">
+                  <span>Área:</span>
+                  <span className="text-emerald-400 font-bold font-mono">{formatMeasurement(area)} mm²</span>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer text-zinc-400 hover:text-white select-none pt-0.5">
+                  <input type="checkbox" checked={applyToPattern} onChange={(e) => setApplyToPattern(e.target.checked)} className="accent-blue-500 rounded" />
+                  <span className="text-[10px]">Propagar a toda la matriz</span>
+                </label>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Dimensiones de Triángulo */}
+        {profiles.some((p: any) => p.type === "triangle") && (() => {
+          const triProf = profiles.find((p: any) => p.type === "triangle");
+          if (!triProf || !triProf.points || triProf.points.length < 3) return null;
+          const xs = triProf.points.map((pt: Point2D) => pt.x);
+          const ys = triProf.points.map((pt: Point2D) => pt.y);
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+          const w = Math.max(0.01, maxX - minX);
+          const h = Math.max(0.01, maxY - minY);
+          const area = 0.5 * w * h;
+          return (
+            <div className="mb-2 bg-black/30 p-2.5 rounded-lg border border-blue-500/20">
+              <SectionHeader title="Dimensiones del Triángulo" icon={Triangle} />
+              <div className="flex flex-col gap-2 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Base / Ancho:</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Base Triángulo"
+                      value={w}
+                      onValueChange={(val: number) => handleUpdateTriangleDims(val, undefined)}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                      min="0.1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">mm</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Altura:</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Altura Triángulo"
+                      value={h}
+                      onValueChange={(val: number) => handleUpdateTriangleDims(undefined, val)}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                      min="0.1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">mm</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-text-muted text-[10px] font-mono border-t border-white/5 pt-1">
+                  <span>Área aprox:</span>
+                  <span className="text-emerald-400 font-bold font-mono">{formatMeasurement(area)} mm²</span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Dimensiones de Polígono / Hexágono */}
+        {profiles.some((p: any) => p.type === "hexagon" || (p.type === "polygon" && p.isClosed && p.points?.length >= 5)) && (() => {
+          const polyProf = profiles.find((p: any) => p.type === "hexagon" || (p.type === "polygon" && p.isClosed && p.points?.length >= 5));
+          if (!polyProf || !polyProf.points || polyProf.points.length < 3) return null;
+          const xs = polyProf.points.map((pt: Point2D) => pt.x);
+          const ys = polyProf.points.map((pt: Point2D) => pt.y);
+          const cX = polyProf.center?.x ?? ((Math.min(...xs) + Math.max(...xs)) / 2);
+          const cY = polyProf.center?.y ?? ((Math.min(...ys) + Math.max(...ys)) / 2);
+          const rad = polyProf.radius ?? Math.hypot(polyProf.points[0].x - cX, polyProf.points[0].y - cY);
+          const side = polyProf.points.length >= 2 ? Math.hypot(polyProf.points[1].x - polyProf.points[0].x, polyProf.points[1].y - polyProf.points[0].y) : 0;
+          return (
+            <div className="mb-2 bg-black/30 p-2.5 rounded-lg border border-blue-500/20">
+              <SectionHeader title={polyProf.type === "hexagon" ? "Dimensiones del Hexágono" : `Polígono Regular (${polyProf.points.length} Lados)`} icon={Hexagon} />
+              <div className="flex flex-col gap-2 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Radio exterior (R):</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Radio Polígono"
+                      value={rad}
+                      onValueChange={handleUpdatePolygonRadius}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                      min="0.1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">mm</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-text-muted text-[10px] font-mono border-t border-white/5 pt-1">
+                  <span>Diámetro (Ø):</span>
+                  <span className="text-emerald-400 font-bold font-mono">{formatMeasurement(rad * 2)} mm</span>
+                </div>
+                <div className="flex items-center justify-between text-text-muted text-[10px] font-mono">
+                  <span>Longitud Lado:</span>
+                  <span className="text-zinc-300 font-mono">{formatMeasurement(side)} mm</span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Dimensiones de Línea / Segmento */}
+        {profiles.some((p: any) => !p.isClosed || (p.points && p.points.length === 2)) && (() => {
+          const lineProf = profiles.find((p: any) => !p.isClosed || (p.points && p.points.length === 2));
+          if (!lineProf || !lineProf.points || lineProf.points.length < 2) return null;
+          const p0 = lineProf.points[0];
+          const pEnd = lineProf.points[lineProf.points.length - 1];
+          const dx = pEnd.x - p0.x;
+          const dy = pEnd.y - p0.y;
+          const len = Math.hypot(dx, dy);
+          const angle = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+          return (
+            <div className="mb-2 bg-black/30 p-2.5 rounded-lg border border-blue-500/20">
+              <SectionHeader title="Dimensiones de la Línea / Segmento" icon={PenTool} />
+              <div className="flex flex-col gap-2 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Longitud (L):</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Longitud Línea"
+                      value={len}
+                      onValueChange={(val: number) => handleUpdateLineDims(val, undefined)}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                      min="0.1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">mm</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Ángulo (∠):</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Ángulo Línea"
+                      value={angle}
+                      onValueChange={(val: number) => handleUpdateLineDims(undefined, val)}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">°</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Dimensiones Generales para otras figuras */}
+        {profiles.some((p: any) => p.isClosed && p.type !== "circle" && p.type !== "rectangle" && p.type !== "triangle" && p.type !== "hexagon" && p.points && p.points.length >= 3) && (() => {
+          const genProf = profiles.find((p: any) => p.isClosed && p.type !== "circle" && p.type !== "rectangle" && p.type !== "triangle" && p.type !== "hexagon" && p.points && p.points.length >= 3);
+          if (!genProf || !genProf.points) return null;
+          const xs = genProf.points.map((pt: Point2D) => pt.x);
+          const ys = genProf.points.map((pt: Point2D) => pt.y);
+          const w = Math.max(0.01, Math.max(...xs) - Math.min(...xs));
+          const h = Math.max(0.01, Math.max(...ys) - Math.min(...ys));
+          return (
+            <div className="mb-2 bg-black/30 p-2.5 rounded-lg border border-blue-500/20">
+              <SectionHeader title="Dimensiones de la Figura" icon={Ruler} />
+              <div className="flex flex-col gap-2 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Ancho total (W):</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Ancho Figura"
+                      value={w}
+                      onValueChange={(val: number) => handleUpdateGeneralDims(val, undefined)}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                      min="0.1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">mm</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-400">Alto total (H):</span>
+                  <div className="flex items-center gap-1">
+                    <MeasurementInput
+                      aria-label="Alto Figura"
+                      value={h}
+                      onValueChange={(val: number) => handleUpdateGeneralDims(undefined, val)}
+                      className="w-20 bg-black/50 border border-white/15 p-1 rounded text-white outline-none text-center font-mono font-bold hover:border-amber-400 focus:border-amber-400"
+                      step="1"
+                      min="0.1"
+                    />
+                    <span className="text-text-muted font-mono text-[10px]">mm</span>
+                  </div>
+                </div>
               </div>
             </div>
           );
@@ -318,11 +717,11 @@ export default function SketchPropertiesPanel({
               <div className="flex gap-1">
                 <div className="flex items-center bg-black/40 rounded px-1 border border-white/10">
                   <span className="text-red-400 mr-1">X</span>
-                  <input type="number" value={pt.x} onChange={(e) => handleVertexChange(i, 'x', parseFloat(e.target.value))} className="w-10 bg-transparent text-white outline-none text-right" step="1"/>
+                  <MeasurementInput key={`${profile.id}-x-${i}`} aria-label={`Vértice ${i} X`} value={pt.x} onValueChange={value => handleVertexChange(i, 'x', value)} className="w-20 bg-transparent text-white outline-none text-right" />
                 </div>
                 <div className="flex items-center bg-black/40 rounded px-1 border border-white/10">
                   <span className="text-green-400 mr-1">Y</span>
-                  <input type="number" value={pt.y} onChange={(e) => handleVertexChange(i, 'y', parseFloat(e.target.value))} className="w-10 bg-transparent text-white outline-none text-right" step="1"/>
+                  <MeasurementInput key={`${profile.id}-y-${i}`} aria-label={`Vértice ${i} Y`} value={pt.y} onValueChange={value => handleVertexChange(i, 'y', value)} className="w-20 bg-transparent text-white outline-none text-right" />
                 </div>
               </div>
             </div>
@@ -337,8 +736,8 @@ export default function SketchPropertiesPanel({
             <span>Conservar original (Copiar)</span>
           </label>
           <div className="flex gap-2">
-            <input type="number" placeholder="dX" value={dx} onChange={(e) => setDx(parseFloat(e.target.value))} className="w-full bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" />
-            <input type="number" placeholder="dY" value={dy} onChange={(e) => setDy(parseFloat(e.target.value))} className="w-full bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" />
+            <MeasurementInput aria-label="Desplazamiento X" placeholder="dX" value={dx} onValueChange={setDx} className="w-full min-w-0 bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" />
+            <MeasurementInput aria-label="Desplazamiento Y" placeholder="dY" value={dy} onValueChange={setDy} className="w-full min-w-0 bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" />
             <button onClick={handleMove} className="bg-blue-600 hover:bg-blue-500 text-white rounded px-2 cursor-pointer font-bold">Aplicar</button>
           </div>
         </div>
@@ -367,7 +766,7 @@ export default function SketchPropertiesPanel({
             <div className="flex gap-1 items-center flex-1">
               <input type="number" value={linearCountX} onChange={(e) => setLinearCountX(parseInt(e.target.value))} min="1" className="w-10 bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" title="Copias en X" />
               <span className="text-zinc-500">x</span>
-              <input type="number" value={linearDx} onChange={(e) => setLinearDx(parseFloat(e.target.value))} className="w-full bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" title="Distancia X" />
+              <MeasurementInput value={linearDx} onValueChange={setLinearDx} className="w-full min-w-0 bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" title="Distancia X" />
               <span className="text-zinc-500">mm</span>
             </div>
           </div>
@@ -376,7 +775,7 @@ export default function SketchPropertiesPanel({
             <div className="flex gap-1 items-center flex-1">
               <input type="number" value={linearCountY} onChange={(e) => setLinearCountY(parseInt(e.target.value))} min="1" className="w-10 bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" title="Copias en Y" />
               <span className="text-zinc-500">x</span>
-              <input type="number" value={linearDy} onChange={(e) => setLinearDy(parseFloat(e.target.value))} className="w-full bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" title="Distancia Y" />
+              <MeasurementInput value={linearDy} onValueChange={setLinearDy} className="w-full min-w-0 bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" title="Distancia Y" />
               <span className="text-zinc-500">mm</span>
             </div>
           </div>
@@ -392,11 +791,12 @@ export default function SketchPropertiesPanel({
           </div>
           <div className="flex gap-2 items-center">
             <span className="text-zinc-400 flex-1">Ángulo total (°):</span>
-            <input type="number" value={circularAngle} onChange={(e) => setCircularAngle(parseFloat(e.target.value))} className="w-16 bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" />
+            <MeasurementInput aria-label="Ángulo total" value={circularAngle} onValueChange={setCircularAngle} className="w-20 bg-black/40 border border-white/10 p-1 rounded text-white outline-none text-center" />
           </div>
           <button onClick={handleCircularPattern} className="w-full p-1.5 bg-white/5 hover:bg-white/10 rounded font-bold text-center cursor-pointer border border-white/5 transition-all text-blue-400 hover:text-blue-300 mt-1">Generar Matriz (Origen)</button>
         </div>
-      </div>
+        </>}
+      </div>}
     </div>
   );
 }

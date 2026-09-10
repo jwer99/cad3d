@@ -44,6 +44,8 @@ import * as polygonClipping from "polygon-clipping";
 import { getSolidRegions, isPointInPolygon } from "../GeometryUtils";
 import { CSG } from "three-csg-ts";
 import SketchPropertiesPanel from "./SketchPropertiesPanel";
+import { pickSketchProfile } from '../utils/sketchSelection';
+import { formatMeasurement } from './MeasurementInput';
 import { bodyGeometryCache } from "../App";
 
 export type SnapType = 'vertex' | 'midpoint' | 'center' | 'intersection' | 'edge' | 'parallel' | 'perpendicular' | 'grid' | 'none';
@@ -643,6 +645,21 @@ export default function CADViewport({
   const [isOsnapMenuOpen, setIsOsnapMenuOpen] = useState(false);
   const [isDrawMenuOpen, setIsDrawMenuOpen] = useState(false);
   const [showExtrudeCard, setShowExtrudeCard] = useState<boolean>(false);
+  const showExtrudeCardRef = useRef(showExtrudeCard);
+  showExtrudeCardRef.current = showExtrudeCard;
+  const [propertiesRevision, setPropertiesRevision] = useState(0);
+  useEffect(() => {
+    if (showExtrudeCard) {
+      setTool('select');
+      toolRef.current = 'select';
+      setDrawingPoints([]);
+      setTempEndPoint(null);
+    }
+  }, [showExtrudeCard]);
+  useEffect(() => {
+    setShowExtrudeCard(false);
+    setSelectedProfileIds([]);
+  }, [activeSketch?.id, isActuallySketchMode]);
   const [isHudCollapsed, setIsHudCollapsed] = useState<boolean>(false);
 
   const handleDeleteSelectedProfiles = () => {
@@ -764,6 +781,7 @@ export default function CADViewport({
       // Fast CAD Tool Hotkeys when in sketch mode
       if (isActuallySketchModeRef.current) {
         if (e.key === 'Escape') {
+          setShowExtrudeCard(false);
           setTool('select');
           toolRef.current = 'select';
           setDrawingPoints([]);
@@ -800,6 +818,8 @@ export default function CADViewport({
           setDrawingPoints([]);
           setTempEndPoint(null);
         } else if (e.key === 's' || e.key === 'S') {
+          setShowExtrudeCard(false);
+          setPropertiesRevision(value => value + 1);
           setTool('select');
           toolRef.current = 'select';
           setDrawingPoints([]);
@@ -867,6 +887,10 @@ export default function CADViewport({
     } else if (planeType === "YZ") {
       rawCadX = intersectPoint.z;
       rawCadY = intersectPoint.y;
+    }
+
+    if (toolRef.current === 'select' && !draggingVertexRef.current) {
+      return { point: { x: rawCadX, y: rawCadY }, type: 'none', guides: [], worldPos: intersectPoint };
     }
 
     // OSNAP calculation
@@ -1154,6 +1178,8 @@ export default function CADViewport({
     const mouse = new THREE.Vector2();
 
     const onCanvasClick = (event: MouseEvent) => {
+      // Sketch selection is handled on pointerdown; do not reinterpret pointerup as extrusion.
+      if ((!showSolid || isActuallySketchModeRef.current) && !isFacePickModeRef.current && activeSolidOpRef.current === 'none') return;
       if (!mountRef.current || !renderer || !camera) return;
       
       const rect = renderer.domElement.getBoundingClientRect();
@@ -1397,6 +1423,17 @@ export default function CADViewport({
       const curSketch = activeSketchRef.current;
       const updateSketch = onUpdateActiveSketchRef.current;
 
+      const commitNewProfile = (newProf: Profile) => {
+        updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProf] });
+        setDrawingPoints([]);
+        setTempEndPoint(null);
+        setSelectedProfileIds([newProf.id]);
+        setTool("select");
+        toolRef.current = "select";
+        setShowExtrudeCard(false);
+        setPropertiesRevision(v => v + 1);
+      };
+
       // Double-click to complete open polyline in line tool
       if (e.detail === 2 && currentTool === "line" && curPts.length >= 2) {
         const newProfile: Profile = {
@@ -1405,9 +1442,7 @@ export default function CADViewport({
           points: [...curPts],
           isClosed: false
         };
-        updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
-        setDrawingPoints([]);
-        setTempEndPoint(null);
+        commitNewProfile(newProfile);
         return;
       }
 
@@ -1518,39 +1553,27 @@ export default function CADViewport({
 
       // Handle Select Tool for 2D profiles and vertex manipulation
       if (currentTool === "select") {
+        if (showExtrudeCardRef.current) {
+          const regions = getSolidRegions(curSketch);
+          const index = regions.findIndex(region => isPointInPolygon(cadPoint, region.outerProfile.points)
+            && !region.holeProfiles.some(hole => isPointInPolygon(cadPoint, hole.points)));
+          if (index >= 0) onShapeClickRef.current?.(index);
+          return;
+        }
+        setPropertiesRevision(value => value + 1);
         // First check if clicking on an existing vertex for interactive dragging
         for (const p of curSketch.profiles) {
           for (let i = 0; i < p.points.length; i++) {
             if (Math.hypot(cadPoint.x - p.points[i].x, cadPoint.y - p.points[i].y) < 3.5) {
               draggingVertexRef.current = { profileId: p.id, vertexIndex: i };
+              setShowExtrudeCard(false);
               setSelectedProfileIds([p.id]);
               return;
             }
           }
         }
 
-        const clickedProfile = curSketch.profiles.find(p => {
-          if (!p.points || p.points.length === 0) return false;
-          if (p.center && Math.hypot(cadPoint.x - p.center.x, cadPoint.y - p.center.y) <= (p.radius || 10) + 3) {
-            return true;
-          }
-          for (let i = 0; i < p.points.length; i++) {
-            const p1 = p.points[i];
-            const p2 = p.points[(i + 1) % p.points.length];
-            const l2 = Math.hypot(p2.x - p1.x, p2.y - p1.y) ** 2;
-            if (l2 < 1e-4) {
-              if (Math.hypot(cadPoint.x - p1.x, cadPoint.y - p1.y) < 5) return true;
-              continue;
-            }
-            const t = Math.max(0, Math.min(1, ((cadPoint.x - p1.x) * (p2.x - p1.x) + (cadPoint.y - p1.y) * (p2.y - p1.y)) / l2));
-            const projX = p1.x + t * (p2.x - p1.x);
-            const projY = p1.y + t * (p2.y - p1.y);
-            if (Math.hypot(cadPoint.x - projX, cadPoint.y - projY) < 4) {
-              return true;
-            }
-          }
-          return false;
-        });
+        const clickedProfile = pickSketchProfile(curSketch.profiles, cadPoint);
 
         const isCtrl = e.ctrlKey || e.metaKey || e.shiftKey;
         if (clickedProfile) {
@@ -1559,36 +1582,35 @@ export default function CADViewport({
             if (isCtrl) {
               return prev.includes(clickedProfile.id) ? prev.filter(id => id !== clickedProfile.id) : [...prev, clickedProfile.id];
             } else {
-              return prev.includes(clickedProfile.id) && prev.length === 1 ? [] : [clickedProfile.id];
+              return [clickedProfile.id];
             }
           });
         } else {
-          // If no outline was clicked, check if clicking inside a solid watertight region/area!
-          const regions = getSolidRegions(curSketch);
-          let clickedRegionIdx = -1;
-          for (let i = 0; i < regions.length; i++) {
-            const reg = regions[i];
-            const inOuter = isPointInPolygon(cadPoint, reg.outerProfile.points);
-            const inHole = reg.holeProfiles.some(h => isPointInPolygon(cadPoint, h.points));
-            if (inOuter && !inHole) {
-              clickedRegionIdx = i;
-              break;
-            }
-          }
-
-          if (clickedRegionIdx !== -1) {
-            // Clicked directly on a watertight closed region!
-            onShapeClickRef.current?.(clickedRegionIdx);
-            setSelectedProfileIds([]);
-            setShowExtrudeCard(true);
-            return;
-          }
-
           if (!isCtrl) {
             setSelectedProfileIds([]);
           }
         }
         return;
+      }
+
+      // If not in the middle of drawing (curPts is empty), clicking on any existing figure selects it and opens properties
+      if (curPts.length === 0 && currentTool !== "erase" && currentTool !== "trim") {
+        const clickedProfile = pickSketchProfile(curSketch.profiles, cadPoint);
+        if (clickedProfile) {
+          setShowExtrudeCard(false);
+          setTool("select");
+          toolRef.current = "select";
+          setPropertiesRevision(value => value + 1);
+          const isCtrl = e.ctrlKey || e.metaKey || e.shiftKey;
+          setSelectedProfileIds(prev => {
+            if (isCtrl) {
+              return prev.includes(clickedProfile.id) ? prev.filter(id => id !== clickedProfile.id) : [...prev, clickedProfile.id];
+            } else {
+              return [clickedProfile.id];
+            }
+          });
+          return;
+        }
       }
 
       if (currentTool === "line") {
@@ -1607,9 +1629,7 @@ export default function CADViewport({
               points: [...curPts],
               isClosed: true
             };
-            updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
-            setDrawingPoints([]);
-            setTempEndPoint(null);
+            commitNewProfile(newProfile);
           } else {
             // Avoid adding identical consecutive points
             const lastPt = curPts[curPts.length - 1];
@@ -1636,9 +1656,7 @@ export default function CADViewport({
             points,
             isClosed: true
           };
-          updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
-          setDrawingPoints([]);
-          setTempEndPoint(null);
+          commitNewProfile(newProfile);
         }
       } else if (currentTool === "rectangle-center") {
         if (curPts.length === 0) {
@@ -1659,9 +1677,7 @@ export default function CADViewport({
             points,
             isClosed: true
           };
-          updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
-          setDrawingPoints([]);
-          setTempEndPoint(null);
+          commitNewProfile(newProfile);
         }
       } else if (currentTool === "circle") {
         if (curPts.length === 0) {
@@ -1685,9 +1701,7 @@ export default function CADViewport({
             radius,
             isClosed: true
           };
-          updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
-          setDrawingPoints([]);
-          setTempEndPoint(null);
+          commitNewProfile(newProfile);
         }
       } else if (currentTool === "arc") {
         if (curPts.length === 0) {
@@ -1706,7 +1720,7 @@ export default function CADViewport({
               points: [p1, p2, p3],
               isClosed: false
             };
-            updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
+            commitNewProfile(newProfile);
           } else {
             const cx = ((p1.x*p1.x + p1.y*p1.y)*(p2.y - p3.y) + (p2.x*p2.x + p2.y*p2.y)*(p3.y - p1.y) + (p3.x*p3.x + p3.y*p3.y)*(p1.y - p2.y)) / D;
             const cy = ((p1.x*p1.x + p1.y*p1.y)*(p3.x - p2.x) + (p2.x*p2.x + p2.y*p2.y)*(p1.x - p3.x) + (p3.x*p3.x + p3.y*p3.y)*(p2.x - p1.x)) / D;
@@ -1742,10 +1756,8 @@ export default function CADViewport({
               points: arcPts,
               isClosed: false
             };
-            updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
+            commitNewProfile(newProfile);
           }
-          setDrawingPoints([]);
-          setTempEndPoint(null);
         }
       } else if (currentTool === "polygon" || (currentTool as any) === "hexagon") {
         if (curPts.length === 0) {
@@ -1768,9 +1780,7 @@ export default function CADViewport({
             points,
             isClosed: true
           };
-          updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
-          setDrawingPoints([]);
-          setTempEndPoint(null);
+          commitNewProfile(newProfile);
         }
       } else if (currentTool === "triangle") {
         if (curPts.length === 0) {
@@ -1793,9 +1803,7 @@ export default function CADViewport({
             points,
             isClosed: true
           };
-          updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
-          setDrawingPoints([]);
-          setTempEndPoint(null);
+          commitNewProfile(newProfile);
         }
       } else if (currentTool === "slot") {
         if (curPts.length === 0) {
@@ -1832,9 +1840,7 @@ export default function CADViewport({
             points,
             isClosed: true
           };
-          updateSketch({ ...curSketch, profiles: [...curSketch.profiles, newProfile] });
-          setDrawingPoints([]);
-          setTempEndPoint(null);
+          commitNewProfile(newProfile);
         }
       }
     };
@@ -3724,7 +3730,7 @@ export default function CADViewport({
             {/* Tool Selector Buttons */}
             <div className="flex items-center bg-surface p-0.5 rounded border border-border-subtle gap-0.5">
               <button
-                onClick={() => { setTool("select"); setDrawingPoints([]); setTempEndPoint(null); }}
+                onClick={() => { setTool("select"); setShowExtrudeCard(false); setPropertiesRevision(value => value + 1); setDrawingPoints([]); setTempEndPoint(null); }}
                 className={`p-1.5 px-2 rounded flex items-center gap-1 text-xs font-semibold transition-all cursor-pointer ${
                   tool === "select" ? "bg-blue-600 text-white shadow-sm" : "text-text-muted hover:text-text-main hover:bg-highlight-subtle"
                 }`}
@@ -4040,12 +4046,41 @@ export default function CADViewport({
           );
         })()}
 
-      {/* Floating 2D Sketch Properties Panel Overlay in 3D Mode */}
-      {!showSolid && tool === "select" && selectedProfileIds.length >= 1 && !isSelectingMirrorAxis && (
+      {!showSolid && activeSketch && (
+        <div className="absolute top-4 right-4 z-20 flex gap-1 w-72 p-1 bg-[#121214]/95 border border-white/15 rounded-lg" role="group" aria-label="Paneles del boceto">
+          <button
+            type="button"
+            aria-pressed={!showExtrudeCard}
+            onClick={() => {
+              setShowExtrudeCard(false);
+              setPropertiesRevision(value => value + 1);
+              if (selectedProfileIds.length === 0 && activeSketch.profiles.length > 0) {
+                setSelectedProfileIds([activeSketch.profiles[activeSketch.profiles.length - 1].id]);
+                setTool("select");
+              }
+            }}
+            className={`flex-1 rounded px-2 py-1.5 text-xs font-semibold ${!showExtrudeCard ? 'bg-blue-500/20 text-blue-300' : 'text-zinc-400 hover:text-white'}`}
+          >
+            Propiedades
+          </button>
+          <button type="button" aria-pressed={showExtrudeCard} disabled={!activeSketch.profiles.length} onClick={() => { setSelectedProfileIds([]); setShowExtrudeCard(true); }} className={`flex-1 rounded px-2 py-1.5 text-xs font-semibold disabled:opacity-40 ${showExtrudeCard ? 'bg-amber-500/20 text-amber-300' : 'text-zinc-400 hover:text-white'}`}>Operación 3D</button>
+        </div>
+      )}
+      {/* Properties take priority while editing a sketch. */}
+      {!showSolid && !isSelectingMirrorAxis && !showExtrudeCard && (
         <SketchPropertiesPanel 
+          showProfileList
+          expandRevision={propertiesRevision}
+          className="absolute top-16 right-4 w-72 bg-[#121214]/95 backdrop-blur-md border border-blue-500/40 rounded-xl shadow-xl flex flex-col pointer-events-auto z-20 max-h-[calc(100%-5rem)] overflow-y-auto custom-scrollbar"
           activeSketch={activeSketch}
           selectedProfileIdsList={selectedProfileIds}
-          setSelectedProfileIds={setSelectedProfileIds}
+          setSelectedProfileIds={(ids: string[]) => {
+            setSelectedProfileIds(ids);
+            setTool("select");
+            toolRef.current = "select";
+            setDrawingPoints([]);
+            setTempEndPoint(null);
+          }}
           onUpdateActiveSketch={onUpdateActiveSketch}
           onClose={() => setSelectedProfileIds([])}
           onExtrudeProfile={(profileId: string) => {
@@ -4119,7 +4154,7 @@ export default function CADViewport({
 
       {/* Floating Boolean Op Configurator */}
       {showSolid && activeSolidOp !== "none" && (
-        <div className="absolute top-4 right-4 z-20 bg-[#121214]/95 backdrop-blur-md border border-amber-500/40 p-4 rounded-xl shadow-[0_10px_35px_rgba(0,0,0,0.6)] w-72 pointer-events-auto flex flex-col gap-3 transition-all animate-fadeIn">
+        <div className={`absolute ${isActuallySketchMode ? "top-16" : "top-4"} right-4 z-20 bg-[#121214]/95 backdrop-blur-md border border-amber-500/40 p-4 rounded-xl shadow-xl w-72 pointer-events-auto flex flex-col gap-3 max-h-[calc(100%-5rem)] overflow-y-auto custom-scrollbar`}>
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest leading-none flex items-center gap-1">
               <Sparkles size={11} className="text-amber-400" />
@@ -4588,13 +4623,13 @@ export default function CADViewport({
       </div>
 
       {/* Floating 3D Operation Glassmorphic Card (Only shown when configuring 3D op or region selected, never colliding with 2D properties) */}
-      {(!isActuallySketchMode || showExtrudeCard) &&
+      {showExtrudeCard &&
         !showSolid &&
         activeSketch &&
         activeSketch.profiles &&
         activeSketch.profiles.length > 0 &&
         selectedProfileIds.length === 0 && (
-        <div className="absolute top-4 right-4 z-20 bg-[#121214]/95 backdrop-blur-md border border-amber-500/40 p-4 rounded-xl shadow-[0_10px_35px_rgba(0,0,0,0.6)] w-72 pointer-events-auto flex flex-col gap-3 transition-all animate-fadeIn">
+        <div className="absolute top-16 right-4 z-20 bg-[#121214]/95 backdrop-blur-md border border-amber-500/40 p-4 rounded-xl shadow-xl w-72 pointer-events-auto flex flex-col gap-3 max-h-[calc(100%-5rem)] overflow-y-auto custom-scrollbar">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest leading-none flex items-center gap-1">
               <Sparkles size={11} className="text-amber-400" />
@@ -4665,7 +4700,7 @@ export default function CADViewport({
                 <div className="flex flex-col gap-1.5">
                   <div className="flex justify-between items-center text-[11px]">
                     <span className="text-text-muted">Altura:</span>
-                    <span className="text-amber-400 font-mono font-bold">{pendingHeight} mm</span>
+                    <span className="text-amber-400 font-mono font-bold">{formatMeasurement(pendingHeight)} mm</span>
                   </div>
                   <input
                     type="range"
@@ -4745,7 +4780,7 @@ export default function CADViewport({
                 <div className="flex flex-col gap-1.5">
                   <div className="flex justify-between items-center text-[11px]">
                     <span className="text-text-muted">Ángulo:</span>
-                    <span className="text-amber-400 font-mono font-bold">{pendingAngle}°</span>
+                    <span className="text-amber-400 font-mono font-bold">{formatMeasurement(pendingAngle)}°</span>
                   </div>
                   <input
                     type="range"

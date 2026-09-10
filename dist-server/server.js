@@ -2775,7 +2775,23 @@ if (fs4.existsSync(DIST_DIR)) {
       res.redirect("/");
     }
   });
+  app.get("/google:code.html", (req, res) => {
+    const filename = `google${req.params.code}.html`;
+    const inDist = path4.join(DIST_DIR, filename);
+    const inPublic = path4.join(process.cwd(), "public", filename);
+    if (fs4.existsSync(inDist)) {
+      return res.sendFile(inDist);
+    }
+    if (fs4.existsSync(inPublic)) {
+      return res.sendFile(inPublic);
+    }
+    res.status(404).type("text/plain").send("Google verification file not found");
+  });
   app.get("*", (req, res) => {
+    if (/\.[a-zA-Z0-9]+$/.test(req.path) && req.path !== "/index.html" && req.path !== "/splitter.html") {
+      res.status(404).type("text/plain").send("Resource not found");
+      return;
+    }
     res.sendFile(path4.join(DIST_DIR, "index.html"));
   });
 } else {
